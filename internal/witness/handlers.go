@@ -731,7 +731,7 @@ func nudgeRefinery(townRoot, rigName string) error {
 }
 
 var slotOpenRecoveryCheck = func(workDir, rigName, polecatName string) (string, error) {
-	return util.ExecWithOutput(workDir, "gt", "polecat", "check-recovery", rigName+"/"+polecatName, "--json")
+	return util.ExecWithOutput(workDir, "gt", "polecat", "check-recovery", rigName+"/"+polecatName, "--json", "--reconcile-cleanup")
 }
 
 func shouldNotifyMayorSlotOpen(workDir, rigName, polecatName string) (bool, string) {
@@ -771,6 +771,23 @@ func notifyMayorSlotOpen(workDir, rigName, polecatName, exitType string) {
 	if townRoot == "" {
 		return
 	}
+	if exitType != string(ExitTypeCompleted) {
+		decision := slotOpenDecision(workDir, townRoot, rigName, polecatName, exitType)
+		if !decision.Reusable {
+			_, _ = channelevents.EmitToTown(townRoot, "mayor", "SLOT_BLOCKED", []string{
+				"source=witness",
+				"rig=" + rigName,
+				"polecat=" + polecatName,
+				"exit=" + exitType,
+				"reason=" + decision.Reason,
+			})
+		}
+		return
+	}
+	if ok, reason := shouldNotifyMayorSlotOpen(workDir, rigName, polecatName); !ok {
+		fmt.Fprintf(os.Stderr, "witness: suppressing SLOT_OPEN for %s/%s: %s\n", rigName, polecatName, reason)
+		return
+	}
 	decision := slotOpenDecision(workDir, townRoot, rigName, polecatName, exitType)
 	if !decision.Reusable {
 		_, _ = channelevents.EmitToTown(townRoot, "mayor", "SLOT_BLOCKED", []string{
@@ -780,10 +797,6 @@ func notifyMayorSlotOpen(workDir, rigName, polecatName, exitType string) {
 			"exit=" + exitType,
 			"reason=" + decision.Reason,
 		})
-		return
-	}
-	if ok, reason := shouldNotifyMayorSlotOpen(workDir, rigName, polecatName); !ok {
-		fmt.Fprintf(os.Stderr, "witness: suppressing SLOT_OPEN for %s/%s: %s\n", rigName, polecatName, reason)
 		return
 	}
 

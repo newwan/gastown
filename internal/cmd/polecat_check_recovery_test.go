@@ -32,6 +32,20 @@ func (f fakeIssueShower) Show(issueID string) (*beads.Issue, error) {
 	return f.issue, f.err
 }
 
+type fakeCleanupUpdater struct {
+	err    error
+	id     string
+	status string
+	calls  int
+}
+
+func (f *fakeCleanupUpdater) UpdateAgentCleanupStatus(id string, cleanupStatus string) error {
+	f.calls++
+	f.id = id
+	f.status = cleanupStatus
+	return f.err
+}
+
 func TestApplyMQCheck(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -222,66 +236,184 @@ func TestCleanupStatusBlockerForRecovery_PartialSpawnWithoutHook(t *testing.T) {
 
 func TestStaleCleanupStatusCanBeIgnoredForRecovery(t *testing.T) {
 	tests := []struct {
-		name        string
-		status      polecat.CleanupStatus
-		terminal    bool
-		hookBead    string
-		activeMR    string
-		gitState    *GitState
-		gitErr      error
-		wantCanSkip bool
+		name         string
+		status       polecat.CleanupStatus
+		workTerminal bool
+		hookSafe     bool
+		activeMRSafe bool
+		gitState     *GitState
+		gitErr       error
+		wantCanSkip  bool
 	}{
 		{
-			name:        "closed source with clean git ignores stale unpushed cleanup",
-			status:      polecat.CleanupUnpushed,
-			terminal:    true,
-			gitState:    &GitState{Clean: true},
-			wantCanSkip: true,
+			name:         "closed source with clean git ignores stale unpushed cleanup",
+			status:       polecat.CleanupUnpushed,
+			workTerminal: true,
+			hookSafe:     true,
+			activeMRSafe: true,
+			gitState:     &GitState{Clean: true},
+			wantCanSkip:  true,
 		},
 		{
-			name:     "open source still blocks",
-			status:   polecat.CleanupUnpushed,
-			gitState: &GitState{Clean: true},
+			name:         "open source still blocks",
+			status:       polecat.CleanupUnpushed,
+			hookSafe:     true,
+			activeMRSafe: true,
+			gitState:     &GitState{Clean: true},
 		},
 		{
-			name:     "hooked work still blocks",
-			status:   polecat.CleanupUnpushed,
-			terminal: true,
-			hookBead: "gt-work",
-			gitState: &GitState{Clean: true},
+			name:         "hooked work still blocks",
+			status:       polecat.CleanupUnpushed,
+			workTerminal: true,
+			activeMRSafe: true,
+			gitState:     &GitState{Clean: true},
 		},
 		{
-			name:     "active MR still blocks",
-			status:   polecat.CleanupUnpushed,
-			terminal: true,
-			activeMR: "gt-mr",
-			gitState: &GitState{Clean: true},
+			name:         "active MR still blocks",
+			status:       polecat.CleanupUnpushed,
+			workTerminal: true,
+			hookSafe:     true,
+			gitState:     &GitState{Clean: true},
 		},
 		{
-			name:     "dirty git still blocks",
-			status:   polecat.CleanupUnpushed,
-			terminal: true,
-			gitState: &GitState{UnpushedCommits: 1},
+			name:         "dirty git still blocks",
+			status:       polecat.CleanupUnpushed,
+			workTerminal: true,
+			hookSafe:     true,
+			activeMRSafe: true,
+			gitState:     &GitState{UnpushedCommits: 1},
 		},
 		{
-			name:     "git error still blocks",
-			status:   polecat.CleanupUnpushed,
-			terminal: true,
-			gitErr:   errors.New("git failed"),
+			name:         "git error still blocks",
+			status:       polecat.CleanupUnpushed,
+			workTerminal: true,
+			hookSafe:     true,
+			activeMRSafe: true,
+			gitErr:       errors.New("git failed"),
 		},
 		{
-			name:     "non-unpushed cleanup still blocks",
-			status:   polecat.CleanupStash,
-			terminal: true,
-			gitState: &GitState{Clean: true},
+			name:         "non-unpushed cleanup still blocks",
+			status:       polecat.CleanupStash,
+			workTerminal: true,
+			hookSafe:     true,
+			activeMRSafe: true,
+			gitState:     &GitState{Clean: true},
+		},
+		{
+			name:         "terminal hook can satisfy work terminal predicate",
+			status:       polecat.CleanupUnpushed,
+			workTerminal: true,
+			hookSafe:     true,
+			activeMRSafe: true,
+			gitState:     &GitState{Clean: true},
+			wantCanSkip:  true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := staleCleanupStatusCanBeIgnoredForRecovery(tt.status, tt.terminal, tt.hookBead, tt.activeMR, tt.gitState, tt.gitErr)
+			got := staleCleanupStatusCanBeIgnoredForRecovery(tt.status, tt.workTerminal, tt.hookSafe, tt.activeMRSafe, tt.gitState, tt.gitErr)
 			if got != tt.wantCanSkip {
 				t.Fatalf("staleCleanupStatusCanBeIgnoredForRecovery() = %v, want %v", got, tt.wantCanSkip)
+			}
+		})
+	}
+}
+
+func TestReconcileCleanupStatusIfSafe(t *testing.T) {
+	status := &RecoveryStatus{
+		CleanupStatus: polecat.CleanupUnpushed,
+		Verdict:       "SAFE_TO_NUKE",
+		Branch:        "polecat/nitro",
+		MQStatus:      "submitted",
+	}
+	updater := &fakeCleanupUpdater{}
+	reconcileCleanupStatusIfSafe(status, updater, "gt-gastown-polecat-nitro", &polecat.Polecat{State: polecat.StateIdle}, &beads.AgentFields{
+		AgentState:    string(beads.AgentStateIdle),
+		CleanupStatus: string(polecat.CleanupUnpushed),
+	})
+
+	if updater.calls != 1 {
+		t.Fatalf("UpdateAgentCleanupStatus calls = %d, want 1", updater.calls)
+	}
+	if updater.id != "gt-gastown-polecat-nitro" || updater.status != string(polecat.CleanupClean) {
+		t.Fatalf("update = (%q, %q), want clean update for agent", updater.id, updater.status)
+	}
+	if status.CleanupStatus != polecat.CleanupClean || !status.Reconciled {
+		t.Fatalf("status after reconcile = (%q, reconciled=%v), want clean true", status.CleanupStatus, status.Reconciled)
+	}
+}
+
+func TestReconcileCleanupStatusIfSafe_FailsClosed(t *testing.T) {
+	status := &RecoveryStatus{
+		CleanupStatus: polecat.CleanupUnpushed,
+		Verdict:       "SAFE_TO_NUKE",
+		Branch:        "polecat/nitro",
+		MQStatus:      "submitted",
+	}
+	reconcileCleanupStatusIfSafe(status, &fakeCleanupUpdater{err: errors.New("bd update failed")}, "gt-gastown-polecat-nitro", &polecat.Polecat{State: polecat.StateIdle}, &beads.AgentFields{
+		AgentState:    string(beads.AgentStateIdle),
+		CleanupStatus: string(polecat.CleanupUnpushed),
+	})
+
+	if status.Verdict != "NEEDS_RECOVERY" || !status.NeedsRecovery {
+		t.Fatalf("failed update verdict = %q needs=%v, want NEEDS_RECOVERY true", status.Verdict, status.NeedsRecovery)
+	}
+	if len(status.Blockers) == 0 || !strings.Contains(status.Blockers[0], "cleanup_reconcile_failed") {
+		t.Fatalf("blockers = %v, want cleanup_reconcile_failed", status.Blockers)
+	}
+}
+
+func TestCleanupStatusReconcileCandidateRequiresStrictPredicates(t *testing.T) {
+	baseStatus := &RecoveryStatus{Verdict: "SAFE_TO_NUKE", Branch: "polecat/nitro", MQStatus: "submitted"}
+	basePolecat := &polecat.Polecat{State: polecat.StateIdle}
+	baseFields := &beads.AgentFields{AgentState: string(beads.AgentStateIdle), CleanupStatus: string(polecat.CleanupUnpushed)}
+
+	tests := []struct {
+		name   string
+		status *RecoveryStatus
+		p      *polecat.Polecat
+		fields *beads.AgentFields
+	}{
+		{name: "stale clean is not rewritten", status: baseStatus, p: basePolecat, fields: &beads.AgentFields{AgentState: string(beads.AgentStateIdle), CleanupStatus: string(polecat.CleanupClean)}},
+		{name: "working polecat blocks", status: baseStatus, p: &polecat.Polecat{State: polecat.StateWorking}, fields: baseFields},
+		{name: "working agent bead blocks", status: baseStatus, p: basePolecat, fields: &beads.AgentFields{AgentState: string(beads.AgentStateWorking), CleanupStatus: string(polecat.CleanupUnpushed)}},
+		{name: "needs recovery blocks", status: &RecoveryStatus{Verdict: "NEEDS_RECOVERY", NeedsRecovery: true, Branch: "polecat/nitro", MQStatus: "submitted"}, p: basePolecat, fields: baseFields},
+		{name: "unknown mq blocks", status: &RecoveryStatus{Verdict: "SAFE_TO_NUKE", Branch: "polecat/nitro", MQStatus: "unknown"}, p: basePolecat, fields: baseFields},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, ok := cleanupStatusReconcileCandidate(tt.status, tt.p, tt.fields); ok {
+				t.Fatal("cleanupStatusReconcileCandidate() allowed unsafe reconciliation")
+			}
+		})
+	}
+}
+
+func TestHookBeadSafeForCleanup(t *testing.T) {
+	tests := []struct {
+		name         string
+		hookBead     string
+		bd           issueShower
+		wantSafe     bool
+		wantTerminal bool
+		wantBlocker  string
+	}{
+		{name: "empty hook", wantSafe: true},
+		{name: "terminal hook", hookBead: "gt-work", bd: fakeIssueShower{issue: &beads.Issue{Status: "closed"}}, wantSafe: true, wantTerminal: true},
+		{name: "open hook blocks", hookBead: "gt-work", bd: fakeIssueShower{issue: &beads.Issue{Status: "open"}}, wantBlocker: "hook_bead=gt-work status=open"},
+		{name: "lookup error blocks", hookBead: "gt-work", bd: fakeIssueShower{err: errors.New("bd exploded")}, wantBlocker: "lookup_error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSafe, gotTerminal, blocker := hookBeadSafeForCleanup(tt.bd, tt.hookBead)
+			if gotSafe != tt.wantSafe || gotTerminal != tt.wantTerminal {
+				t.Fatalf("hookBeadSafeForCleanup() = (%v, %v), want (%v, %v)", gotSafe, gotTerminal, tt.wantSafe, tt.wantTerminal)
+			}
+			if tt.wantBlocker != "" && !strings.Contains(blocker, tt.wantBlocker) {
+				t.Fatalf("blocker = %q, want contains %q", blocker, tt.wantBlocker)
 			}
 		})
 	}
@@ -373,6 +505,16 @@ func TestRecoveryGitStateBlocker(t *testing.T) {
 				t.Errorf("recoveryGitStateBlocker() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStaleCleanWithRealUnpushedStillBlocks(t *testing.T) {
+	status := RecoveryStatus{CleanupStatus: polecat.CleanupClean}
+	if blocker := recoveryGitStateBlocker("/tmp/polecat", &GitState{UnpushedCommits: 1}, nil); blocker != "" {
+		status.Blockers = append(status.Blockers, blocker)
+	}
+	if len(status.Blockers) != 1 || !strings.Contains(status.Blockers[0], "git_state=has_unpushed") {
+		t.Fatalf("blockers = %v, want git_state=has_unpushed", status.Blockers)
 	}
 }
 
