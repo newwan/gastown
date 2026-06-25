@@ -191,21 +191,32 @@ func TestRecheckMRStillMergeable_RejectsMissingSourceIssue(t *testing.T) {
 }
 
 func TestRecheckMRStillMergeable_RejectsNonConcreteSource(t *testing.T) {
-	workDir, _, cleanup := testGitRepo(t)
-	defer cleanup()
-	store := newPrepushStore(
-		prepushIssue("gt-src", "", "gt:merge-request"),
-		prepushMRIssue("gt-mr", "feature", "main", "gt-src"),
-	)
-	e := newPrepushEngineer(t, workDir, store)
-
-	mr := &MRInfo{ID: "gt-mr", Branch: "feature", Target: "main", SourceIssue: "gt-src"}
-	result := e.recheckMRStillMergeable(mr, "main")
-	if result.Success || !result.NoMerge {
-		t.Fatalf("non-concrete source should be rejected, got: %+v", result)
+	tests := []struct {
+		name  string
+		label string
+	}{
+		{name: "merge_request", label: "gt:merge-request"},
+		{name: "handoff", label: "gt:handoff"},
 	}
-	if !strings.Contains(store.closeReasons["gt-mr"], "not concrete") {
-		t.Fatalf("MR close reason = %q, want non-concrete rejection", store.closeReasons["gt-mr"])
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir, _, cleanup := testGitRepo(t)
+			defer cleanup()
+			store := newPrepushStore(
+				prepushIssue("gt-src", "", tc.label),
+				prepushMRIssue("gt-mr", "feature", "main", "gt-src"),
+			)
+			e := newPrepushEngineer(t, workDir, store)
+
+			mr := &MRInfo{ID: "gt-mr", Branch: "feature", Target: "main", SourceIssue: "gt-src"}
+			result := e.recheckMRStillMergeable(mr, "main")
+			if result.Success || !result.NoMerge {
+				t.Fatalf("non-concrete source should be rejected, got: %+v", result)
+			}
+			if !strings.Contains(store.closeReasons["gt-mr"], "not concrete") {
+				t.Fatalf("MR close reason = %q, want non-concrete rejection", store.closeReasons["gt-mr"])
+			}
+		})
 	}
 }
 

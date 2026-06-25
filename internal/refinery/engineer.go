@@ -268,6 +268,7 @@ type Engineer struct {
 	mergeSlotRelease      func(holder string) error
 	mergeSlotMaxRetries   int           // Max retries for slot acquisition (0 = no retry)
 	mergeSlotRetryBackoff time.Duration // Initial backoff between retries
+	testAllowSyntheticMRs bool          // Test-only: legacy merge-mechanics tests use synthetic MRs without beads.
 }
 
 // NewEngineer creates a new Engineer for the given rig.
@@ -875,13 +876,13 @@ func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessRes
 
 	sourceIssue := strings.TrimSpace(mr.SourceIssue)
 	if sourceIssue == "" {
-		if isSyntheticMergeMechanicsMR(mr) {
+		if e.isSyntheticMergeMechanicsMR(mr) {
 			return ProcessResult{Success: true}
 		}
 		return e.rejectMRBeforeMerge(mr, "MR has missing source_issue")
 	}
 
-	if mrID := strings.TrimSpace(mr.ID); mrID != "" && !isSyntheticMergeMechanicsMR(mr) {
+	if mrID := strings.TrimSpace(mr.ID); mrID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
 		mrIssue, err := e.beads.Show(mrID)
 		if err != nil {
 			if errors.Is(err, beads.ErrNotFound) {
@@ -936,8 +937,8 @@ func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessRes
 	return e.recheckMRSourceStillMergeable(mr, sourceIssue)
 }
 
-func isSyntheticMergeMechanicsMR(mr *MRInfo) bool {
-	return mr != nil && strings.HasPrefix(strings.TrimSpace(mr.ID), "mr-") && strings.TrimSpace(mr.SourceIssue) == ""
+func (e *Engineer) isSyntheticMergeMechanicsMR(mr *MRInfo) bool {
+	return e.testAllowSyntheticMRs && mr != nil && strings.HasPrefix(strings.TrimSpace(mr.ID), "mr-") && strings.TrimSpace(mr.SourceIssue) == ""
 }
 
 func (e *Engineer) rejectMRBeforeMerge(mr *MRInfo, reason string) ProcessResult {
@@ -1007,7 +1008,7 @@ func refinerySourceIssueConcreteReason(issue *beads.Issue) string {
 
 func refineryInternalIssueType(issueType string) bool {
 	switch strings.ToLower(strings.TrimSpace(issueType)) {
-	case "wisp", "message", "merge-request", "agent", "queue", "convoy", "formula":
+	case "wisp", "message", "handoff", "merge-request", "agent", "queue", "convoy", "formula":
 		return true
 	default:
 		return false
@@ -1016,7 +1017,7 @@ func refineryInternalIssueType(issueType string) bool {
 
 func refineryInternalIssueLabel(label string) bool {
 	switch strings.ToLower(strings.TrimSpace(label)) {
-	case "gt:wisp", "gt:message", "gt:merge-request", "gt:agent", "gt:queue", "gt:convoy", "gt:formula":
+	case "gt:wisp", "gt:message", "gt:handoff", "gt:merge-request", "gt:agent", "gt:queue", "gt:convoy", "gt:formula":
 		return true
 	default:
 		return false

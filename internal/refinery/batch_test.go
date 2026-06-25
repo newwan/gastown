@@ -94,6 +94,7 @@ func newTestEngineer(t *testing.T, workDir string, g *gitpkg.Git) *Engineer {
 	e.git = g
 	e.workDir = workDir
 	e.output = &bytes.Buffer{}
+	e.testAllowSyntheticMRs = true
 	// No-op merge slot functions for tests
 	e.mergeSlotEnsureExists = func() (string, error) { return "test-slot", nil }
 	e.mergeSlotAcquire = func(holder string, addWaiter bool) (*beads.MergeSlotStatus, error) {
