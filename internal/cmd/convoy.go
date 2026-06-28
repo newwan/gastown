@@ -947,6 +947,9 @@ func runConvoyAdd(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("couldn't clear convoy completion notification state: %w", err)
 			}
 		}
+		if err := persistTownBeadsJSONL(townBeads); err != nil {
+			return fmt.Errorf("couldn't persist reopened convoy to JSONL: %w", err)
+		}
 		reopened = true
 		fmt.Printf("%s Reopened convoy %s\n", style.Bold.Render("↺"), convoyID)
 	}
@@ -1059,6 +1062,9 @@ func closeConvoyIfComplete(townBeads, convoyID, title string, tracked []trackedI
 	closeArgs := []string{"close", convoyID, "-r", reason}
 	if err := BdCmd(closeArgs...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
 		return false, fmt.Errorf("closing convoy: %w", err)
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		return false, fmt.Errorf("persisting convoy close to JSONL: %w", err)
 	}
 
 	fmt.Printf("%s Auto-closed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, title)
@@ -1209,6 +1215,9 @@ func runConvoyClose(cmd *cobra.Command, args []string) error {
 	closeArgs := []string{"close", convoyID, "-r", reason}
 	if err := BdCmd(closeArgs...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
 		return fmt.Errorf("closing convoy: %w", err)
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		return fmt.Errorf("persisting convoy close to JSONL: %w", err)
 	}
 
 	fmt.Printf("%s Closed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, convoy.Title)
@@ -1382,6 +1391,9 @@ func runConvoyLand(cmd *cobra.Command, args []string) error {
 	closeArgs := []string{"close", convoyID, "-r", reason}
 	if err := BdCmd(closeArgs...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
 		return fmt.Errorf("closing convoy: %w", err)
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		return fmt.Errorf("persisting convoy close to JSONL: %w", err)
 	}
 
 	fmt.Printf("\n%s Landed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, convoy.Title)
@@ -1782,6 +1794,19 @@ func checkAndCloseCompletedConvoys(townBeads string, dryRun bool) ([]struct{ ID,
 	return closed, nil
 }
 
+// persistTownBeadsJSONL writes the current town Beads state to the JSONL file
+// used by bd's fallback import path. Convoy close/check suppresses bd's implicit
+// auto-export for normal command hygiene, but close state must survive a later
+// Dolt rebuild from .beads/issues.jsonl.
+func persistTownBeadsJSONL(townBeads string) error {
+	beadsDir := beads.ResolveBeadsDir(townBeads)
+	if beadsDir == "" {
+		return fmt.Errorf("could not resolve town .beads directory")
+	}
+	issuesPath := filepath.Join(beadsDir, "issues.jsonl")
+	return BdCmd("export", "-o", issuesPath).Dir(townBeads).Run()
+}
+
 // notifyConvoyCompletion sends notifications to owner, any notify addresses, and mayor/.
 func notifyConvoyCompletion(townBeads, convoyID, title string) {
 	stdout, err := runBdJSON(townBeads, "show", convoyID, "--json")
@@ -1809,6 +1834,10 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoys[0].Description}, fields)
 	if err := BdCmd("update", convoyID, "--description="+newDesc).Dir(townBeads).WithAutoCommit().Run(); err != nil {
 		style.PrintWarning("could not record convoy completion notification state for %s: %v", convoyID, err)
+		return
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		style.PrintWarning("could not persist convoy completion notification state for %s: %v", convoyID, err)
 		return
 	}
 
