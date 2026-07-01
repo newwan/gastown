@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1060,11 +1061,12 @@ func closeConvoyIfComplete(townBeads, convoyID, title string, tracked []trackedI
 
 	reason := "All tracked issues completed"
 	closeArgs := []string{"close", convoyID, "-r", reason}
-	if err := BdCmd(closeArgs...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
-		return false, fmt.Errorf("closing convoy: %w", err)
-	}
-	if err := persistTownBeadsJSONL(townBeads); err != nil {
-		return false, fmt.Errorf("persisting convoy close to JSONL: %w", err)
+	if err := runTownMutationAndExport(townBeads, closeArgs...); err != nil {
+		if errors.As(err, new(townJSONLExportError)) {
+			style.PrintWarning("convoy close recorded for %s, but JSONL export failed; continuing notification: %v", convoyID, err)
+		} else {
+			return false, fmt.Errorf("closing convoy: %w", err)
+		}
 	}
 
 	fmt.Printf("%s Auto-closed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, title)
@@ -1213,11 +1215,12 @@ func runConvoyClose(cmd *cobra.Command, args []string) error {
 
 	// Close the convoy
 	closeArgs := []string{"close", convoyID, "-r", reason}
-	if err := BdCmd(closeArgs...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
-		return fmt.Errorf("closing convoy: %w", err)
-	}
-	if err := persistTownBeadsJSONL(townBeads); err != nil {
-		return fmt.Errorf("persisting convoy close to JSONL: %w", err)
+	if err := runTownMutationAndExport(townBeads, closeArgs...); err != nil {
+		if errors.As(err, new(townJSONLExportError)) {
+			style.PrintWarning("convoy close recorded for %s, but JSONL export failed; continuing notification: %v", convoyID, err)
+		} else {
+			return fmt.Errorf("closing convoy: %w", err)
+		}
 	}
 
 	fmt.Printf("%s Closed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, convoy.Title)
@@ -1389,11 +1392,12 @@ func runConvoyLand(cmd *cobra.Command, args []string) error {
 	// Phase 2: Close the convoy
 	reason := "Landed by owner"
 	closeArgs := []string{"close", convoyID, "-r", reason}
-	if err := BdCmd(closeArgs...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
-		return fmt.Errorf("closing convoy: %w", err)
-	}
-	if err := persistTownBeadsJSONL(townBeads); err != nil {
-		return fmt.Errorf("persisting convoy close to JSONL: %w", err)
+	if err := runTownMutationAndExport(townBeads, closeArgs...); err != nil {
+		if errors.As(err, new(townJSONLExportError)) {
+			style.PrintWarning("convoy close recorded for %s, but JSONL export failed; continuing notification: %v", convoyID, err)
+		} else {
+			return fmt.Errorf("closing convoy: %w", err)
+		}
 	}
 
 	fmt.Printf("\n%s Landed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, convoy.Title)
@@ -1807,6 +1811,28 @@ func persistTownBeadsJSONL(townBeads string) error {
 	return BdCmd("export", "-o", issuesPath).Dir(townBeads).Run()
 }
 
+type townJSONLExportError struct {
+	err error
+}
+
+func (e townJSONLExportError) Error() string {
+	return e.err.Error()
+}
+
+func (e townJSONLExportError) Unwrap() error {
+	return e.err
+}
+
+func runTownMutationAndExport(townBeads string, args ...string) error {
+	if err := BdCmd(args...).Dir(townBeads).WithAutoCommit().Run(); err != nil {
+		return err
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		return townJSONLExportError{err: err}
+	}
+	return nil
+}
+
 // notifyConvoyCompletion sends notifications to owner, any notify addresses, and mayor/.
 func notifyConvoyCompletion(townBeads, convoyID, title string) {
 	stdout, err := runBdJSON(townBeads, "show", convoyID, "--json")
@@ -1828,6 +1854,9 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 		fields = &beads.ConvoyFields{}
 	}
 	if fields.CompletionNotifiedAt != "" {
+		if err := persistTownBeadsJSONL(townBeads); err != nil {
+			style.PrintWarning("could not retry convoy completion notification JSONL export for %s: %v", convoyID, err)
+		}
 		return
 	}
 
@@ -1893,12 +1922,8 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 
 	fields.CompletionNotifiedAt = time.Now().UTC().Format(time.RFC3339)
 	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoys[0].Description}, fields)
-	if err := BdCmd("update", convoyID, "--description="+newDesc).Dir(townBeads).WithAutoCommit().Run(); err != nil {
+	if err := runTownMutationAndExport(townBeads, "update", convoyID, "--description="+newDesc); err != nil {
 		style.PrintWarning("could not record convoy completion notification state for %s: %v", convoyID, err)
-		return
-	}
-	if err := persistTownBeadsJSONL(townBeads); err != nil {
-		style.PrintWarning("could not persist convoy completion notification state for %s: %v", convoyID, err)
 		return
 	}
 }
