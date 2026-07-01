@@ -178,9 +178,84 @@ exit 0
 	want := strings.Join([]string{
 		"close",
 		"export:export -o " + filepath.Join(townRoot, ".beads", "issues.jsonl"),
+		"mail",
 		"update",
 		"export:export -o " + filepath.Join(townRoot, ".beads", "issues.jsonl"),
+	}, "\n")
+	if got != want {
+		t.Fatalf("operation order mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestNotifyConvoyCompletion_ExportFailureDoesNotPreventMail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows - shell stubs")
+	}
+
+	binDir := t.TempDir()
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+
+	orderPath := filepath.Join(binDir, "order.log")
+	bdPath := filepath.Join(binDir, "bd")
+	gtPath := filepath.Join(binDir, "gt")
+
+	bdScript := `#!/bin/sh
+ORDER="` + orderPath + `"
+if [ "$1" = "--allow-stale" ]; then
+  shift
+fi
+case "$1" in
+  version)
+    exit 0
+    ;;
+  show)
+    printf '%s\n' '[{"id":"hq-cv-export-fail","description":"Owner: mayor/","created_at":"2026-05-25T02:00:00Z"}]'
+    exit 0
+    ;;
+  sql)
+    printf '%s\n' '[]'
+    exit 0
+    ;;
+  update)
+    echo update >> "$ORDER"
+    exit 0
+    ;;
+  export)
+    echo export:"$@" >> "$ORDER"
+    exit 1
+    ;;
+esac
+exit 1
+`
+	if err := os.WriteFile(bdPath, []byte(bdScript), 0755); err != nil {
+		t.Fatalf("write bd stub: %v", err)
+	}
+
+	gtScript := `#!/bin/sh
+if [ "$1" = "mail" ] && [ "$2" = "send" ]; then
+  echo mail >> "` + orderPath + `"
+fi
+exit 0
+`
+	if err := os.WriteFile(gtPath, []byte(gtScript), 0755); err != nil {
+		t.Fatalf("write gt stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	notifyConvoyCompletion(townRoot, "hq-cv-export-fail", "Export Failure")
+
+	data, err := os.ReadFile(orderPath)
+	if err != nil {
+		t.Fatalf("read order log: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	want := strings.Join([]string{
 		"mail",
+		"update",
+		"export:export -o " + filepath.Join(townRoot, ".beads", "issues.jsonl"),
 	}, "\n")
 	if got != want {
 		t.Fatalf("operation order mismatch:\n got:\n%s\nwant:\n%s", got, want)

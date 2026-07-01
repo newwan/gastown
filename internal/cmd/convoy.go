@@ -1830,16 +1830,6 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 	if fields.CompletionNotifiedAt != "" {
 		return
 	}
-	fields.CompletionNotifiedAt = time.Now().UTC().Format(time.RFC3339)
-	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoys[0].Description}, fields)
-	if err := BdCmd("update", convoyID, "--description="+newDesc).Dir(townBeads).WithAutoCommit().Run(); err != nil {
-		style.PrintWarning("could not record convoy completion notification state for %s: %v", convoyID, err)
-		return
-	}
-	if err := persistTownBeadsJSONL(townBeads); err != nil {
-		style.PrintWarning("could not persist convoy completion notification state for %s: %v", convoyID, err)
-		return
-	}
 
 	// Compute duration since convoy was created.
 	var durationStr string
@@ -1900,6 +1890,17 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 
 	// Push notification to active Mayor session if configured.
 	notifyMayorSession(townBeads, convoyID, title)
+
+	fields.CompletionNotifiedAt = time.Now().UTC().Format(time.RFC3339)
+	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoys[0].Description}, fields)
+	if err := BdCmd("update", convoyID, "--description="+newDesc).Dir(townBeads).WithAutoCommit().Run(); err != nil {
+		style.PrintWarning("could not record convoy completion notification state for %s: %v", convoyID, err)
+		return
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		style.PrintWarning("could not persist convoy completion notification state for %s: %v", convoyID, err)
+		return
+	}
 }
 
 // notifyMayorSession pushes a convoy completion notification into the active
